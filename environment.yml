@@ -1,0 +1,22 @@
+name: sherdfusion
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - pandas
+  - matplotlib
+  - scikit-learn
+  - pillow
+  - tqdm
+  - shapely
+  - opencv
+  - pytorch=2.6.*
+  - torchvision=0.21.*
+  - pytorch-cuda=12.4
+  - pip:
+      - torch-geometric>=2.6,<2.7
+      - timm>=1.0,<1.1

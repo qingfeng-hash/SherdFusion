@@ -8,6 +8,38 @@ SherdFusion is a staged pipeline for pottery sherd matching. The repository is o
 
 The project also includes compact dataset builders and a gold-standard evaluation branch for end-to-end verification.
 
+## Environment Setup
+
+This repository is developed around a Conda environment defined in `environment.yml`.
+
+Create and activate the environment with:
+
+```bash
+conda env create -f environment.yml
+conda activate sherdfusion
+```
+
+If you already have a compatible PyTorch/CUDA environment, make sure the following core dependencies are available:
+
+- `pytorch`
+- `torchvision`
+- `torch-geometric`
+- `numpy`
+- `pandas`
+- `matplotlib`
+- `scikit-learn`
+- `pillow`
+- `tqdm`
+- `shapely`
+- `opencv-python`
+- `timm`
+
+## Pipeline
+
+Pipeline figure: [page/pipline.pdf](page/pipline.pdf)
+
+Overview of the proposed *SherdFusion* pipeline. Stage 1 performs graph-based fragment retrieval using a shared graph encoder to compute similarity and obtain Top-\(K\) candidates. Stage 2 conducts diffusion-guided pose estimation, where candidate pairs are aligned through iterative denoising in SE(2) space to produce geometrically consistent multi-hypothesis results. Finally, Stage 3 utilizes a learning-based pairwise compatibility verification network to assess the validity of the assembled fragment pairs and filter out incorrect matches.
+
 ## Repository Layout
 
 - `dataset_simulated_sample_1000/`
@@ -74,6 +106,12 @@ Stage 3 expects CSV files with these columns:
 - `interior_image`
 - `exterior_path`
 - `interior_path`
+
+## Data Download
+
+Part of the Daxinzhuang 18k sample dataset and part of the simulated dataset are available from the following Google Drive link:
+
+- https://drive.google.com/file/d/1pHldx5CgoEQEqzFFaVFJWZUZaAPF4g2Z/view?usp=sharing
 
 ## Main Entry Points
 
