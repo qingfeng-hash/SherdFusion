@@ -31,7 +31,7 @@ def main():
     parser.add_argument("--input_dir", type=str, required=True, help="Folder containing *_exterior and *_interior images.")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to the trained best_model.pt checkpoint.")
     parser.add_argument("--output_csv", type=str, default="predictions.csv", help="Output CSV for inference results.")
-    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--threshold", type=float, default=0.5, help="Probability threshold for the positive class.")
     args = parser.parse_args()

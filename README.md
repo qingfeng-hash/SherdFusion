@@ -101,23 +101,16 @@ Main entry point:
 
 Stage 1 trains graph-based fragment embeddings and evaluates retrieval metrics such as `R@5`, `R@10`, `NDCG@5`, and `NDCG@10`.
 
-### 3. Train Stage 2 pose estimation
+### 3. Stage 2 pose estimation
 
-Main entry point:
+Main entry points:
 
 - `stage_2_pose_estimation/train/train_pair.py`
-
-Stage 2 trains a diffusion model for pairwise rigid alignment and saves checkpoints plus train/validation visualizations.
-
-### 4. Evaluate Stage 2 pose estimation
-
-Main entry point:
-
 - `stage_2_pose_estimation/test/test.py`
 
-The evaluation script reconstructs the saved validation split and reports recall-oriented metrics such as `Recall`, `AEtrans`, `AErot`, and `Avg. IoU`.
+Stage 2 includes both diffusion-based pairwise rigid alignment training and validation-time evaluation. The training script saves checkpoints and train/validation visualizations, while the evaluation script reconstructs the saved validation split and reports recall-oriented metrics such as `Recall`, `AEtrans`, `AErot`, and `Avg. IoU`.
 
-### 5. Train Stage 3 pairwise compatibility
+### 4. Train Stage 3 pairwise compatibility
 
 Main entry points:
 
@@ -127,11 +120,10 @@ Main entry points:
 
 Stage 3 trains an image-based binary classifier for pair compatibility and supports batch inference on candidate exterior/interior pairs.
 
-### 6. Run gold-standard end-to-end evaluation
+### 5. Run gold-standard end-to-end evaluation
 
 Main entry point:
 
-- `gold_standard_end_to_end/`
+- `gold_standard_end_to_end/search_global.py`
 
-This branch combines retrieval and pose verification on the curated benchmark data.
-
+This branch combines retrieval and pose verification on the gold-standard dataset.

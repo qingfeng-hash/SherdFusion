@@ -132,7 +132,7 @@ def main():
     parser.add_argument("--output_dir", type=str, default="outputs", help="Directory for checkpoints and metrics.")
     parser.add_argument("--image_size", type=int, default=224)
     parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--val_ratio", type=float, default=0.2)
