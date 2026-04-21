@@ -23,6 +23,12 @@ from dataset import PotteryPairDataset, build_eval_transform, build_train_transf
 from model import PairClassifier
 
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_LABELS_CSV = SCRIPT_DIR / "all_labels.csv"
+DEFAULT_PROJECT_ROOT = SCRIPT_DIR
+DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "outputs"
+
+
 def set_seed(seed: int = 42):
     """Set all random seeds used in training."""
     random.seed(seed)
@@ -127,9 +133,9 @@ def save_curve(history, output_dir: Path):
 def main():
     """Train the model and save the best validation checkpoint."""
     parser = argparse.ArgumentParser(description="Train a binary classifier for pottery pair compatibility.")
-    parser.add_argument("--labels_csv", type=str, required=True, help="Merged label CSV.")
-    parser.add_argument("--project_root", type=str, default=".", help="Root directory used to resolve image paths.")
-    parser.add_argument("--output_dir", type=str, default="outputs", help="Directory for checkpoints and metrics.")
+    parser.add_argument("--labels_csv", type=str, default=str(DEFAULT_LABELS_CSV), help="Merged label CSV.")
+    parser.add_argument("--project_root", type=str, default=str(DEFAULT_PROJECT_ROOT), help="Root directory used to resolve image paths.")
+    parser.add_argument("--output_dir", type=str, default=str(DEFAULT_OUTPUT_DIR), help="Directory for checkpoints and metrics.")
     parser.add_argument("--image_size", type=int, default=224)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=200)
@@ -145,6 +151,9 @@ def main():
     set_seed(args.seed)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if not Path(args.labels_csv).exists():
+        raise FileNotFoundError(f"Label CSV not found: {args.labels_csv}")
 
     all_samples = load_samples_from_csv(args.labels_csv, args.project_root)
     if len(all_samples) < 10:

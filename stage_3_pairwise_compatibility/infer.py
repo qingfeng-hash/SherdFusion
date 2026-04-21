@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import pandas as pd
 import torch
@@ -11,6 +12,12 @@ from tqdm import tqdm
 
 from dataset import PotteryPairDataset, build_eval_transform, scan_infer_folder
 from model import PairClassifier
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_INPUT_DIR = SCRIPT_DIR / "infer_input"
+DEFAULT_CHECKPOINT = SCRIPT_DIR / "outputs" / "best_model.pt"
+DEFAULT_OUTPUT_CSV = SCRIPT_DIR / "predictions.csv"
 
 
 def collate_fn(batch):
@@ -28,13 +35,16 @@ def collate_fn(batch):
 def main():
     """Load a checkpoint and run batch inference on one folder."""
     parser = argparse.ArgumentParser(description="Run batch inference for pairwise pottery compatibility.")
-    parser.add_argument("--input_dir", type=str, required=True, help="Folder containing *_exterior and *_interior images.")
-    parser.add_argument("--checkpoint", type=str, required=True, help="Path to the trained best_model.pt checkpoint.")
-    parser.add_argument("--output_csv", type=str, default="predictions.csv", help="Output CSV for inference results.")
+    parser.add_argument("--input_dir", type=str, default=str(DEFAULT_INPUT_DIR), help="Folder containing *_exterior and *_interior images.")
+    parser.add_argument("--checkpoint", type=str, default=str(DEFAULT_CHECKPOINT), help="Path to the trained best_model.pt checkpoint.")
+    parser.add_argument("--output_csv", type=str, default=str(DEFAULT_OUTPUT_CSV), help="Output CSV for inference results.")
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--threshold", type=float, default=0.5, help="Probability threshold for the positive class.")
     args = parser.parse_args()
+
+    if not Path(args.checkpoint).exists():
+        raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
 
     samples = scan_infer_folder(args.input_dir)
     if not samples:
