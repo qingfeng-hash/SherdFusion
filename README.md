@@ -36,7 +36,9 @@ If you already have a compatible PyTorch/CUDA environment, make sure the followi
 
 ## Pipeline
 
-Pipeline figure: [page/pipline.pdf](page/pipline.pdf)
+![SherdFusion pipeline](page/pipline.png)
+
+Full pipeline PDF: [page/pipline.pdf](page/pipline.pdf)
 
 Overview of the proposed *SherdFusion* pipeline. Stage 1 performs graph-based fragment retrieval using a shared graph encoder to compute similarity and obtain Top-\(K\) candidates. Stage 2 conducts diffusion-guided pose estimation, where candidate pairs are aligned through iterative denoising in SE(2) space to produce geometrically consistent multi-hypothesis results. Finally, Stage 3 utilizes a learning-based pairwise compatibility verification network to assess the validity of the assembled fragment pairs and filter out incorrect matches.
 
