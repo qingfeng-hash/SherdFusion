@@ -107,37 +107,54 @@ def pc_sampler_state(
     g1,
     g2,
     num_steps=256,
-    snr=0.16,
-    corrector_steps=4,
+    snr=0.2,
+    corrector_steps=5,
 ):
     """Predictor-corrector sampler for action states."""
     device = next(score_model.parameters()).device
     batch_size = g1.num_graphs if hasattr(g1, "num_graphs") else 1
 
+    # ===== 1. 初始化噪声，根据每个维度独立 sigma_max =====
     sigma_max_vec = SIGMA_MAX_VEC.to(device)
     actions = torch.randn(batch_size, 2, 4, device=device) * sigma_max_vec.view(1, 1, 4)
 
+    # ===== 2. 时间网格 =====
     time_steps = torch.linspace(1.0, 1e-3, num_steps, device=device)
     dt = time_steps[0] - time_steps[1]
     traj = []
 
     with torch.no_grad():
-        for t in time_steps:
+        for step_idx in range(len(time_steps)):
+            t = time_steps[step_idx]
             t_batch = torch.full((batch_size,), t, device=device)
+
+            # ===== 3. 获取扩散系数 g(t): [B, 1, 4] =====
             _, g = sde_fn(t_batch)
+
+            # ===== 4. 模型 Score =====
             score = score_model(g1, g2, actions, t_batch)
 
+            # =====================================================
+            # Corrector (Langevin Dynamics)
+            # =====================================================
             for _ in range(corrector_steps):
                 noise = torch.randn_like(actions)
+
                 grad_norm = torch.norm(score.reshape(batch_size, -1), dim=-1).mean()
                 noise_norm = torch.norm(noise.reshape(batch_size, -1), dim=-1).mean()
+
                 step_size = (snr * noise_norm / (grad_norm + 1e-6)) ** 2 * 2
-                step_size = step_size.view(batch_size, 1, 1)
+                step_size = step_size.expand(batch_size).contiguous().view(batch_size, 1, 1)
+
                 actions = actions + step_size * score + torch.sqrt(2 * step_size) * noise
 
+            # =====================================================
+            # Predictor (Reverse SDE)
+            # =====================================================
             noise = torch.randn_like(actions)
             drift_rev = (g**2) * score
             actions = actions + drift_rev * dt + g * torch.sqrt(dt) * noise
+
             traj.append(actions.unsqueeze(1))
 
     return torch.cat(traj, dim=1), actions.detach().cpu()

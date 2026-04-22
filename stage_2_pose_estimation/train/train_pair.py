@@ -27,7 +27,11 @@ from sde import ExponentialMovingAverage, init_sde, lossFun, pc_sampler_state
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parents[1]
-DEFAULT_DATASET_PATH = PROJECT_ROOT / "dataset_simulated_sample_1000" / "simulated_dataset_pairs.pkl"
+DATASET_PATHS = [
+    PROJECT_ROOT / "dataset_simulated_sample" / "simulated_dataset_pairs1.pkl",
+    PROJECT_ROOT / "dataset_simulated_sample" / "simulated_dataset_pairs2.pkl",
+    PROJECT_ROOT / "dataset_simulated_sample" / "simulated_dataset_pairs3.pkl",
+]
 DEFAULT_PRETRAINED_PATH = SCRIPT_DIR / "critic_29.pth"
 DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "outputs"
 
@@ -150,15 +154,17 @@ def save_pose_visualization(
     split_name: str,
     output_dir: Path,
     num_steps_sample: int,
+    num_pose_candidates: int,
 ) -> None:
-    """Sample one pair from the dataset and save GT/prediction visualizations."""
+    """Sample one pair from the dataset and save GT plus multiple prediction visualizations."""
     if len(dataset) == 0:
         return
 
     sample_index = random.randrange(len(dataset))
     graph_a, graph_b, gt_actions = dataset[sample_index]
-    batch_a = PyGBatch.from_data_list([graph_a]).to(device)
-    batch_b = PyGBatch.from_data_list([graph_b]).to(device)
+    num_pose_candidates = max(1, int(num_pose_candidates))
+    batch_a = PyGBatch.from_data_list([graph_a.clone() for _ in range(num_pose_candidates)]).to(device)
+    batch_b = PyGBatch.from_data_list([graph_b.clone() for _ in range(num_pose_candidates)]).to(device)
 
     was_training = model.training
     model.eval()
@@ -173,14 +179,22 @@ def save_pose_visualization(
     if was_training:
         model.train()
 
-    predicted_actions = sampled_actions[0].to(device)
+    predicted_actions = sampled_actions.to(device)
 
     vertices_a = graph_a.poly
     vertices_b = graph_b.poly
 
-    figure, axes = plt.subplots(1, 2, figsize=(12, 6))
+    figure, axes = plt.subplots(1, num_pose_candidates + 1, figsize=(6 * (num_pose_candidates + 1), 6))
+    axes = np.atleast_1d(axes)
     draw_pose_pair(axes[0], vertices_a, vertices_b, gt_actions, f"{split_name} GT")
-    draw_pose_pair(axes[1], vertices_a, vertices_b, predicted_actions, f"{split_name} Pred")
+    for candidate_idx in range(num_pose_candidates):
+        draw_pose_pair(
+            axes[candidate_idx + 1],
+            vertices_a,
+            vertices_b,
+            predicted_actions[candidate_idx],
+            f"{split_name} Pred {candidate_idx + 1}",
+        )
 
     figure.suptitle(f"Epoch {epoch:04d} | sample {sample_index}", fontsize=13)
     figure.tight_layout()
@@ -190,27 +204,47 @@ def save_pose_visualization(
     plt.close(figure)
 
 
-def load_simulated_pair_dataset(pkl_path: Path):
-    """Load the compact simulated dataset format saved with six pickle dumps."""
-    with pkl_path.open("rb") as file_handle:
-        all_polys = pickle.load(file_handle)
-        all_local_features = pickle.load(file_handle)
-        all_global_features = pickle.load(file_handle)
-        all_actions = pickle.load(file_handle)
-        positive_pair_indices = pickle.load(file_handle)
-        all_fragment_images = pickle.load(file_handle)
+def load_simulated_pair_dataset(pkl_paths):
+    """Load and merge one or more compact simulated dataset PKL files."""
+    all_polys = []
+    all_local_features = []
+    all_global_features = []
+    all_actions = []
+    positive_pair_indices = []
+    fragment_id_offset = 0
 
-    expected_length = len(all_polys)
-    for name, values in [
-        ("all_local_features", all_local_features),
-        ("all_global_features", all_global_features),
-        ("all_actions", all_actions),
-        ("all_fragment_images", all_fragment_images),
-    ]:
-        if len(values) != expected_length:
-            raise ValueError(
-                f"{name} has length {len(values)}, expected {expected_length}."
-            )
+    for pkl_path in pkl_paths:
+        with pkl_path.open("rb") as file_handle:
+            dataset_polys = pickle.load(file_handle)
+            dataset_local_features = pickle.load(file_handle)
+            dataset_global_features = pickle.load(file_handle)
+            dataset_actions = pickle.load(file_handle)
+            dataset_positive_pairs = pickle.load(file_handle)
+            dataset_fragment_images = pickle.load(file_handle)
+
+        expected_length = len(dataset_polys)
+        for name, values in [
+            ("all_local_features", dataset_local_features),
+            ("all_global_features", dataset_global_features),
+            ("all_actions", dataset_actions),
+            ("all_fragment_images", dataset_fragment_images),
+        ]:
+            if len(values) != expected_length:
+                raise ValueError(
+                    f"{name} has length {len(values)}, expected {expected_length} in {pkl_path}."
+                )
+
+        all_polys.extend(dataset_polys)
+        all_local_features.extend(dataset_local_features)
+        all_global_features.extend(dataset_global_features)
+        all_actions.extend(dataset_actions)
+        positive_pair_indices.extend(
+            [
+                (int(fragment_a) + fragment_id_offset, int(fragment_b) + fragment_id_offset)
+                for fragment_a, fragment_b in dataset_positive_pairs
+            ]
+        )
+        fragment_id_offset += expected_length
 
     if not positive_pair_indices:
         raise ValueError("positive_pair_indices is empty.")
@@ -220,7 +254,7 @@ def load_simulated_pair_dataset(pkl_path: Path):
         "all_local_features": all_local_features,
         "all_global_features": all_global_features,
         "all_actions": all_actions,
-        "positive_pair_indices": [tuple(map(int, pair)) for pair in positive_pair_indices],
+        "positive_pair_indices": positive_pair_indices,
     }
 
 
@@ -459,14 +493,13 @@ def evaluate_loss(
 def build_arg_parser() -> argparse.ArgumentParser:
     """Create the CLI for diffusion training."""
     parser = argparse.ArgumentParser(description="Train the pose diffusion model on simulated_dataset_pairs.pkl.")
-    parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET_PATH)
     parser.add_argument("--pretrained", type=Path, default=DEFAULT_PRETRAINED_PATH)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--seed", type=int, default=3407)
     parser.add_argument("--sde-mode", type=str, default="ve")
     parser.add_argument("--n-epochs", type=int, default=300)
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--ema-rate", type=float, default=0.999)
     parser.add_argument("--repeat-num", type=int, default=1)
@@ -475,8 +508,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--test-ratio", type=float, default=0.1)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--save-every", type=int, default=20)
-    parser.add_argument("--visualize-every", type=int, default=10)
+    parser.add_argument("--validate-every", type=int, default=5)
+    parser.add_argument("--visualize-every", type=int, default=5)
     parser.add_argument("--num-steps-sample", type=int, default=128)
+    parser.add_argument("--num-pose-candidates", type=int, default=3)
     return parser
 
 
@@ -485,14 +520,15 @@ def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    if not args.dataset.exists():
-        raise FileNotFoundError(f"Dataset not found: {args.dataset}")
+    for dataset_path in DATASET_PATHS:
+        if not dataset_path.exists():
+            raise FileNotFoundError(f"Dataset not found: {dataset_path}")
 
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    dataset_dict = load_simulated_pair_dataset(args.dataset)
+    dataset_dict = load_simulated_pair_dataset(DATASET_PATHS)
     train_pairs, val_pairs = split_positive_pairs(
         dataset_dict["positive_pair_indices"],
         test_ratio=args.test_ratio,
@@ -580,27 +616,38 @@ def main() -> None:
             global_step=global_step,
         )
 
-        ema.store(model.parameters())
-        ema.copy_to(model.parameters())
-        val_loss = evaluate_loss(
-            model=model,
-            dataloader=val_loader,
-            marginal_prob_fn=marginal_prob_fn,
-            device=device,
-        )
-        ema.restore(model.parameters())
+        run_validation = args.validate_every > 0 and epoch % args.validate_every == 0
+        val_loss = float("nan")
+        if run_validation:
+            ema.store(model.parameters())
+            ema.copy_to(model.parameters())
+            val_loss = evaluate_loss(
+                model=model,
+                dataloader=val_loader,
+                marginal_prob_fn=marginal_prob_fn,
+                device=device,
+            )
+            ema.restore(model.parameters())
 
         current_lr = optimizer.param_groups[0]["lr"]
         append_history_row(history_csv_path, epoch, train_loss, val_loss, current_lr)
 
-        print(
-            f"Epoch {epoch:04d} | "
-            f"train_loss={train_loss:.6f} | "
-            f"val_loss={val_loss:.6f} | "
-            f"lr={current_lr:.6e}"
-        )
+        if run_validation:
+            print(
+                f"Epoch {epoch:04d} | "
+                f"train_loss={train_loss:.6f} | "
+                f"val_loss={val_loss:.6f} | "
+                f"lr={current_lr:.6e}"
+            )
+        else:
+            print(
+                f"Epoch {epoch:04d} | "
+                f"train_loss={train_loss:.6f} | "
+                f"val_loss=skipped | "
+                f"lr={current_lr:.6e}"
+            )
 
-        if val_loss < best_val_loss:
+        if run_validation and val_loss < best_val_loss:
             best_val_loss = val_loss
             ema.store(model.parameters())
             ema.copy_to(model.parameters())
@@ -643,6 +690,7 @@ def main() -> None:
                 split_name="Train",
                 output_dir=vis_dir,
                 num_steps_sample=args.num_steps_sample,
+                num_pose_candidates=args.num_pose_candidates,
             )
             save_pose_visualization(
                 model=model,
@@ -653,6 +701,7 @@ def main() -> None:
                 split_name="Val",
                 output_dir=vis_dir,
                 num_steps_sample=args.num_steps_sample,
+                num_pose_candidates=args.num_pose_candidates,
             )
             ema.restore(model.parameters())
 

@@ -24,22 +24,26 @@ from PolygonMatchingNet import PolygonMatchingNet
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-DATASET_PATH = SCRIPT_DIR / "../dataset_simulated_sample_1000/simulated_dataset_pairs.pkl"
-PRETRAINED_PATH = SCRIPT_DIR / "stage1_search_epoch.pth"
+DATASET_PATHS = [
+    SCRIPT_DIR / "../dataset_simulated_sample/simulated_dataset_pairs1.pkl",
+    SCRIPT_DIR / "../dataset_simulated_sample/simulated_dataset_pairs2.pkl",
+    SCRIPT_DIR / "../dataset_simulated_sample/simulated_dataset_pairs3.pkl",
+]
+PRETRAINED_PATH = SCRIPT_DIR / "None"
 CHECKPOINT_DIR = SCRIPT_DIR / "checkpoints"
 VIS_DIR = SCRIPT_DIR / "vis_top5"
 METRICS_CSV_PATH = SCRIPT_DIR / "retrieval_metrics.csv"
 
-TRAIN_RATIO = 0.7
+TRAIN_RATIO = 0.85
 BATCH_SIZE = 256
 EPOCHS = 200
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 1e-5
 GEOM_WEIGHT = 0.3
 GLOBAL_WEIGHT = 0.7
 TEMPERATURE = 0.07
 SAVE_EVERY = 10
 VIS_TOPK = 5
-MAX_VISUALIZATIONS = 20
+MAX_VISUALIZATIONS = 10
 
 
 @dataclass
@@ -52,6 +56,8 @@ class FragmentRecord:
     global_feature: np.ndarray
     action: np.ndarray
     image: np.ndarray | None = None
+    source_path: Path | None = None
+    local_fragment_id: int | None = None
 
 
 def calculate_angle(p1, p2, p3):
@@ -129,66 +135,88 @@ def make_fragment_identity_key(poly, local_feature, global_feature, action):
     return hasher.hexdigest()
 
 
-def build_fragment_catalog(pkl_path: Path, load_images=False):
-    """Build a fragment catalog from the compact simulated_dataset_pairs file."""
-    dataset = load_pair_dataset(pkl_path, load_images=load_images)
+def build_fragment_catalog(pkl_paths, load_images=False):
+    """Build a fragment catalog from one or more compact simulated_dataset_pairs files."""
     fragments = {}
     neighbors = {}
     positive_pairs = set()
 
-    all_polys = dataset["all_polys"]
-    all_local_features = dataset["all_local_features"]
-    all_global_features = dataset["all_global_features"]
-    all_actions = dataset["all_actions"]
-    all_fragment_images = dataset["all_fragment_images"]
-    positive_pair_indices = dataset["positive_pair_indices"] or []
+    next_fragment_id = 0
+    for pkl_path in pkl_paths:
+        dataset = load_pair_dataset(pkl_path, load_images=load_images)
 
-    for fragment_id in range(len(all_polys)):
-        image = None
-        if all_fragment_images is not None:
-            image = all_fragment_images[fragment_id]
+        all_polys = dataset["all_polys"]
+        all_local_features = dataset["all_local_features"]
+        all_global_features = dataset["all_global_features"]
+        all_actions = dataset["all_actions"]
+        all_fragment_images = dataset["all_fragment_images"]
+        positive_pair_indices = dataset["positive_pair_indices"] or []
 
-        fragments[fragment_id] = FragmentRecord(
-            fragment_id=fragment_id,
-            poly=np.asarray(all_polys[fragment_id], dtype=np.float32),
-            local_feature=np.asarray(all_local_features[fragment_id], dtype=np.float32),
-            global_feature=np.asarray(all_global_features[fragment_id], dtype=np.float32),
-            action=np.asarray(all_actions[fragment_id], dtype=np.float32),
-            image=image,
-        )
-        neighbors[fragment_id] = set()
+        fragment_id_offset = next_fragment_id
 
-    for fragment_a, fragment_b in positive_pair_indices:
-        if fragment_a == fragment_b:
-            continue
-        neighbors[fragment_a].add(fragment_b)
-        neighbors[fragment_b].add(fragment_a)
-        positive_pairs.add((fragment_a, fragment_b))
-        positive_pairs.add((fragment_b, fragment_a))
+        for local_fragment_id in range(len(all_polys)):
+            fragment_id = fragment_id_offset + local_fragment_id
+            image = None
+            if all_fragment_images is not None:
+                image = all_fragment_images[local_fragment_id]
+
+            fragments[fragment_id] = FragmentRecord(
+                fragment_id=fragment_id,
+                poly=np.asarray(all_polys[local_fragment_id], dtype=np.float32),
+                local_feature=np.asarray(all_local_features[local_fragment_id], dtype=np.float32),
+                global_feature=np.asarray(all_global_features[local_fragment_id], dtype=np.float32),
+                action=np.asarray(all_actions[local_fragment_id], dtype=np.float32),
+                image=image,
+                source_path=pkl_path,
+                local_fragment_id=local_fragment_id,
+            )
+            neighbors[fragment_id] = set()
+
+        for local_fragment_a, local_fragment_b in positive_pair_indices:
+            if local_fragment_a == local_fragment_b:
+                continue
+            fragment_a = fragment_id_offset + local_fragment_a
+            fragment_b = fragment_id_offset + local_fragment_b
+            neighbors[fragment_a].add(fragment_b)
+            neighbors[fragment_b].add(fragment_a)
+            positive_pairs.add((fragment_a, fragment_b))
+            positive_pairs.add((fragment_b, fragment_a))
+
+        next_fragment_id += len(all_polys)
 
     return fragments, neighbors, sorted(positive_pairs)
 
 
-def attach_fragment_images(fragments, pkl_path: Path):
-    """Populate images lazily from the fifth pickle dump when visualization is needed."""
-    dataset = load_pair_dataset(pkl_path, load_images=True)
-    all_fragment_images = dataset["all_fragment_images"] or []
-    for fragment_id, image_blob in enumerate(all_fragment_images):
-        if fragment_id in fragments and fragments[fragment_id].image is None:
-            fragments[fragment_id].image = image_blob
+def attach_fragment_images(fragments):
+    """Populate images lazily for all source datasets when visualization is needed."""
+    image_cache = {}
+
+    for record in fragments.values():
+        if record.image is not None or record.source_path is None or record.local_fragment_id is None:
+            continue
+
+        if record.source_path not in image_cache:
+            dataset = load_pair_dataset(record.source_path, load_images=True)
+            image_cache[record.source_path] = dataset["all_fragment_images"] or []
+
+        dataset_images = image_cache[record.source_path]
+        if record.local_fragment_id < len(dataset_images):
+            record.image = dataset_images[record.local_fragment_id]
 
 
-def split_fragment_ids(fragments, neighbors, train_ratio=TRAIN_RATIO, seed=42):
-    """Split fragment ids into train and test sets."""
-    rng = random.Random(seed)
-    fragment_ids = [
-        fragment_id for fragment_id, positive_ids in neighbors.items() if positive_ids
-    ]
-    rng.shuffle(fragment_ids)
+def split_fragment_ids(positive_pairs, train_ratio=TRAIN_RATIO):
+    """Split fragment ids by shuffling the unique ids appearing in all pair items."""
+    all_ids = set()
+    for fragment_a, fragment_b in positive_pairs:
+        all_ids.add(fragment_a)
+        all_ids.add(fragment_b)
 
-    split_idx = int(len(fragment_ids) * train_ratio)
-    train_ids = set(fragment_ids[:split_idx])
-    test_ids = set(fragment_ids[split_idx:])
+    all_ids = list(all_ids)
+    random.shuffle(all_ids)
+
+    split_idx = int(len(all_ids) * train_ratio)
+    train_ids = set(all_ids[:split_idx])
+    test_ids = set(all_ids[split_idx:])
     return train_ids, test_ids
 
 
@@ -264,62 +292,104 @@ def multi_pos_info_nce(logits, ids_a, ids_b, neighbors):
     return -positive_log_prob.mean()
 
 
-def evaluate_retrieval(model, graph_dict, split_ids, neighbors, device, topk=(5, 10)):
-    """Evaluate full-fragment retrieval on one split."""
-    model.eval()
+def compute_batch_retrieval_metrics(logits, ids_a, ids_b, neighbors, topk=(5, 10)):
+    """Compute batch-local retrieval metrics following the legacy evaluation."""
+    ranked_indices = torch.argsort(logits, dim=-1, descending=True)
+    batch_candidates = set(ids_b)
+    metrics = {}
 
-    query_ids = [fragment_id for fragment_id in sorted(split_ids) if neighbors.get(fragment_id)]
-    if not query_ids:
-        return {}, []
+    for k in topk:
+        recall_sum = 0.0
+        ndcg_sum = 0.0
+        valid_queries = 0
 
-    with torch.no_grad():
-        embeddings, global_features = encode_graph_batch(model, graph_dict, query_ids, device)
-        logits = build_logits(embeddings, embeddings, global_features, global_features).cpu()
+        for row_idx, query_id in enumerate(ids_a):
+            batch_gt_set = neighbors.get(query_id, set()) & batch_candidates
+            if not batch_gt_set:
+                continue
 
-    rankings = []
-    metrics = {f"R@{k}": 0.0 for k in topk}
-    metrics.update({f"NDCG@{k}": 0.0 for k in topk})
+            valid_queries += 1
+            ranked_pred_ids = []
+            seen_pred_ids = set()
+            for col_idx in ranked_indices[row_idx].tolist():
+                pred_id = ids_b[col_idx]
+                if pred_id == query_id or pred_id in seen_pred_ids:
+                    continue
+                ranked_pred_ids.append(pred_id)
+                seen_pred_ids.add(pred_id)
+            pred_ids = ranked_pred_ids[:k]
 
-    valid_query_count = 0
+            hit_set = set(pred_ids) & batch_gt_set
+            recall_sum += len(hit_set) / len(batch_gt_set)
 
-    for row_idx, query_id in enumerate(query_ids):
-        gt_ids = [fragment_id for fragment_id in neighbors[query_id] if fragment_id in split_ids]
-        if not gt_ids:
-            continue
+            seen = set()
+            relevance = []
+            for pred_id in pred_ids:
+                if pred_id in seen:
+                    relevance.append(0)
+                else:
+                    relevance.append(1 if pred_id in batch_gt_set else 0)
+                    seen.add(pred_id)
 
-        valid_query_count += 1
-        ranking = torch.argsort(logits[row_idx], descending=True).tolist()
-        ranking = [query_ids[col_idx] for col_idx in ranking if query_ids[col_idx] != query_id]
-
-        ranking_info = {
-            "query_id": query_id,
-            "gt_ids": set(gt_ids),
-            "top_ids": ranking,
-        }
-        rankings.append(ranking_info)
-
-        gt_set = set(gt_ids)
-        for k in topk:
-            top_ids = ranking[:k]
-            hit = any(fragment_id in gt_set for fragment_id in top_ids)
-            metrics[f"R@{k}"] += float(hit)
-
-            relevance = [1 if fragment_id in gt_set else 0 for fragment_id in top_ids]
             dcg = sum(
                 relevance[idx] / math.log2(idx + 2)
                 for idx in range(len(relevance))
             )
-            ideal_hits = min(len(gt_set), k)
+            ideal_hits = min(len(batch_gt_set), k)
             idcg = sum(1.0 / math.log2(idx + 2) for idx in range(ideal_hits))
-            metrics[f"NDCG@{k}"] += (dcg / idcg) if idcg > 0 else 0.0
+            ndcg_sum += (dcg / idcg) if idcg > 0 else 0.0
 
-    if valid_query_count == 0:
-        return {metric_name: 0.0 for metric_name in metrics}, rankings
+        if valid_queries > 0:
+            metrics[f"Recall@{k}"] = recall_sum / valid_queries
+            metrics[f"NDCG@{k}"] = ndcg_sum / valid_queries
+        else:
+            metrics[f"Recall@{k}"] = 0.0
+            metrics[f"NDCG@{k}"] = 0.0
+
+    return metrics
+
+
+def build_batch_rankings(logits, ids_a, ids_b, neighbors):
+    """Build batch-local rankings for visualization."""
+    ranked_indices = torch.argsort(logits, dim=-1, descending=True)
+    batch_candidates = set(ids_b)
+    rankings = []
+
+    for row_idx, query_id in enumerate(ids_a):
+        batch_gt_set = neighbors.get(query_id, set()) & batch_candidates
+        if not batch_gt_set:
+            continue
+
+        top_ids = []
+        seen_top_ids = set()
+        for col_idx in ranked_indices[row_idx].tolist():
+            pred_id = ids_b[col_idx]
+            if pred_id == query_id or pred_id in seen_top_ids:
+                continue
+            top_ids.append(pred_id)
+            seen_top_ids.add(pred_id)
+        rankings.append({
+            "query_id": query_id,
+            "gt_ids": set(batch_gt_set),
+            "top_ids": top_ids,
+        })
+
+    return rankings
+
+
+def average_metric_logs(metric_logs, topk=(5, 10)):
+    """Average metric dictionaries the same way as the legacy training script."""
+    if not metric_logs:
+        metrics = {}
+        for k in topk:
+            metrics[f"Recall@{k}"] = 0.0
+            metrics[f"NDCG@{k}"] = 0.0
+        return metrics
 
     return {
-        metric_name: metric_value / valid_query_count
-        for metric_name, metric_value in metrics.items()
-    }, rankings
+        metric_name: sum(item[metric_name] for item in metric_logs) / len(metric_logs)
+        for metric_name in metric_logs[0]
+    }
 
 
 def visualize_top5_results(rankings, fragments, output_dir, topk=VIS_TOPK, max_visualizations=MAX_VISUALIZATIONS):
@@ -402,18 +472,18 @@ def write_metrics_csv(metrics_path, train_metrics, test_metrics):
     """Save the final retrieval metrics to CSV."""
     with metrics_path.open("w", newline="", encoding="utf-8") as file_handle:
         writer = csv.writer(file_handle)
-        writer.writerow(["split", "R@5", "R@10", "NDCG@5", "NDCG@10"])
+        writer.writerow(["split", "Recall@5", "Recall@10", "NDCG@5", "NDCG@10"])
         writer.writerow([
             "train",
-            f"{train_metrics.get('R@5', 0.0):.6f}",
-            f"{train_metrics.get('R@10', 0.0):.6f}",
+            f"{train_metrics.get('Recall@5', 0.0):.6f}",
+            f"{train_metrics.get('Recall@10', 0.0):.6f}",
             f"{train_metrics.get('NDCG@5', 0.0):.6f}",
             f"{train_metrics.get('NDCG@10', 0.0):.6f}",
         ])
         writer.writerow([
             "test",
-            f"{test_metrics.get('R@5', 0.0):.6f}",
-            f"{test_metrics.get('R@10', 0.0):.6f}",
+            f"{test_metrics.get('Recall@5', 0.0):.6f}",
+            f"{test_metrics.get('Recall@10', 0.0):.6f}",
             f"{test_metrics.get('NDCG@5', 0.0):.6f}",
             f"{test_metrics.get('NDCG@10', 0.0):.6f}",
         ])
@@ -423,16 +493,17 @@ def print_metrics(prefix, metrics):
     """Print a compact metric summary."""
     print(
         f"{prefix} | "
-        f"R@5={metrics.get('R@5', 0.0):.4f} | "
-        f"R@10={metrics.get('R@10', 0.0):.4f} | "
+        f"Recall@5={metrics.get('Recall@5', 0.0):.4f} | "
+        f"Recall@10={metrics.get('Recall@10', 0.0):.4f} | "
         f"NDCG@5={metrics.get('NDCG@5', 0.0):.4f} | "
         f"NDCG@10={metrics.get('NDCG@10', 0.0):.4f}"
     )
 
 
 def main():
-    if not DATASET_PATH.exists():
-        raise FileNotFoundError(f"Dataset not found: {DATASET_PATH}")
+    for dataset_path in DATASET_PATHS:
+        if not dataset_path.exists():
+            raise FileNotFoundError(f"Dataset not found: {dataset_path}")
 
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
     VIS_DIR.mkdir(parents=True, exist_ok=True)
@@ -440,10 +511,10 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    fragments, neighbors, positive_pairs = build_fragment_catalog(DATASET_PATH, load_images=False)
+    fragments, neighbors, positive_pairs = build_fragment_catalog(DATASET_PATHS, load_images=False)
     graph_dict = build_graph_dict(fragments)
 
-    train_ids, test_ids = split_fragment_ids(fragments, neighbors)
+    train_ids, test_ids = split_fragment_ids(positive_pairs)
     train_pairs = filter_pairs_by_split(positive_pairs, train_ids)
     test_pairs = filter_pairs_by_split(positive_pairs, test_ids)
 
@@ -460,13 +531,14 @@ def main():
     else:
         print("No pretrained checkpoint found; training from scratch.")
 
-    best_test_r5 = -1.0
+    best_test_recall5 = -1.0
 
     for epoch in range(1, EPOCHS + 1):
         model.train()
         random.shuffle(train_pairs)
         epoch_loss = 0.0
         num_batches = 0
+        train_metric_logs = []
 
         for pair_batch in batch_positive_pairs(train_pairs, BATCH_SIZE):
             ids_a = [fragment_a for fragment_a, _ in pair_batch]
@@ -483,21 +555,69 @@ def main():
 
             epoch_loss += loss.item()
             num_batches += 1
+            train_metric_logs.append(
+                compute_batch_retrieval_metrics(
+                    logits.detach().cpu(),
+                    ids_a,
+                    ids_b,
+                    neighbors,
+                )
+            )
 
         avg_loss = epoch_loss / max(num_batches, 1)
         print(f"[Epoch {epoch}] Train Loss={avg_loss:.6f}")
 
-        train_metrics, _ = evaluate_retrieval(model, graph_dict, train_ids, neighbors, device)
-        test_metrics, test_rankings = evaluate_retrieval(model, graph_dict, test_ids, neighbors, device)
+        train_metrics = average_metric_logs(train_metric_logs)
+
+        model.eval()
+        test_loss = 0.0
+        test_metric_logs = []
+        test_rankings = []
+        test_batches = 0
+
+        with torch.no_grad():
+            for pair_batch in batch_positive_pairs(test_pairs, BATCH_SIZE):
+                ids_a = [fragment_a for fragment_a, _ in pair_batch]
+                ids_b = [fragment_b for _, fragment_b in pair_batch]
+
+                emb_a, global_a = encode_graph_batch(model, graph_dict, ids_a, device)
+                emb_b, global_b = encode_graph_batch(model, graph_dict, ids_b, device)
+                logits = build_logits(emb_a, emb_b, global_a, global_b)
+                loss = multi_pos_info_nce(logits, ids_a, ids_b, neighbors)
+
+                test_loss += loss.item()
+                test_batches += 1
+                cpu_logits = logits.cpu()
+                test_metric_logs.append(
+                    compute_batch_retrieval_metrics(
+                        cpu_logits,
+                        ids_a,
+                        ids_b,
+                        neighbors,
+                    )
+                )
+                if len(test_rankings) < MAX_VISUALIZATIONS:
+                    test_rankings.extend(
+                        build_batch_rankings(
+                            cpu_logits,
+                            ids_a,
+                            ids_b,
+                            neighbors,
+                        )
+                    )
+
+        avg_test_loss = test_loss / max(test_batches, 1)
+        print(f"[Epoch {epoch}] Test Loss={avg_test_loss:.6f}")
+        test_metrics = average_metric_logs(test_metric_logs)
 
         print_metrics(f"[Epoch {epoch}] Train", train_metrics)
         print_metrics(f"[Epoch {epoch}] Test", test_metrics)
 
         if epoch % SAVE_EVERY == 0:
-            best_test_r5 = max(best_test_r5, test_metrics.get("R@5", 0.0))
+            best_test_recall5 = max(best_test_recall5, test_metrics.get("Recall@5", 0.0))
             if any(record.image is None for record in fragments.values()):
                 print("Loading fragment images for visualization ...")
-                attach_fragment_images(fragments, DATASET_PATH)
+                attach_fragment_images(fragments)
             visualize_top5_results(test_rankings, fragments, VIS_DIR, topk=VIS_TOPK)
             write_metrics_csv(METRICS_CSV_PATH, train_metrics, test_metrics)
             print(f"Updated top5 visualizations in: {VIS_DIR}")

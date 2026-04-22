@@ -25,7 +25,7 @@ if str(TRAIN_DIR) not in sys.path:
 from critic import PolygonPackingTransformer
 from sde import init_sde, pc_sampler_state
 from train_pair import (
-    DEFAULT_DATASET_PATH,
+    DATASET_PATHS,
     load_checkpoint_compat,
     load_simulated_pair_dataset,
     set_seed,
@@ -216,17 +216,20 @@ def choose_better_result(result_a, result_b):
 
 def sample_multiple(score_model, sde_fn, graph_a, graph_b, num_steps, n_samples):
     """Sample multiple pose predictions for one pair."""
-    results = []
-    for _ in range(n_samples):
-        _, final_actions = pc_sampler_state(
-            score_model=score_model,
-            sde_fn=sde_fn,
-            g1=graph_a,
-            g2=graph_b,
-            num_steps=num_steps,
-        )
-        results.append(final_actions[0])
-    return results
+    n_samples = max(1, int(n_samples))
+    batch_a = PyGBatch.from_data_list([graph.to("cpu").clone() for graph in graph_a.to_data_list() for _ in range(n_samples)])
+    batch_b = PyGBatch.from_data_list([graph.to("cpu").clone() for graph in graph_b.to_data_list() for _ in range(n_samples)])
+    batch_a = batch_a.to(next(score_model.parameters()).device)
+    batch_b = batch_b.to(next(score_model.parameters()).device)
+
+    _, final_actions = pc_sampler_state(
+        score_model=score_model,
+        sde_fn=sde_fn,
+        g1=batch_a,
+        g2=batch_b,
+        num_steps=num_steps,
+    )
+    return [final_actions[idx] for idx in range(final_actions.shape[0])]
 
 
 def close_polygon(points):
@@ -446,13 +449,12 @@ def build_arg_parser():
     parser = argparse.ArgumentParser(description="Evaluate Pose_Estimation on the training validation split.")
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--weights", type=Path, default=DEFAULT_WEIGHTS)
-    parser.add_argument("--dataset", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--test-ratio", type=float, default=None)
     parser.add_argument("--sde-mode", type=str, default=None)
     parser.add_argument("--num-steps-sample", type=int, default=256)
     parser.add_argument("--n-samples", type=int, default=5)
-    parser.add_argument("--max-test-cases", type=int, default=10)
+    parser.add_argument("--max-test-cases", type=int, default=50)
     parser.add_argument("--max-visualizations", type=int, default=20)
     parser.add_argument("--trans-thresh", type=float, default=50.0)
     parser.add_argument("--rot-thresh", type=float, default=10.0)
@@ -467,22 +469,24 @@ def main():
     args = parser.parse_args()
 
     saved_args = load_training_configuration(args.checkpoint)
-    dataset_path = Path(args.dataset or saved_args.get("dataset", DEFAULT_DATASET_PATH))
     split_seed = args.seed if args.seed is not None else int(saved_args.get("seed", 3407))
     test_ratio = args.test_ratio if args.test_ratio is not None else float(saved_args.get("test_ratio", 0.1))
     sde_mode = args.sde_mode or saved_args.get("sde_mode", "ve")
 
-    if not dataset_path.exists():
-        raise FileNotFoundError(f"Dataset not found: {dataset_path}")
+    for dataset_path in DATASET_PATHS:
+        if not dataset_path.exists():
+            raise FileNotFoundError(f"Dataset not found: {dataset_path}")
 
     set_seed(split_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    print(f"Dataset: {dataset_path}")
+    print("Datasets:")
+    for dataset_path in DATASET_PATHS:
+        print(f"  - {dataset_path}")
     print(f"Split seed: {split_seed}")
     print(f"Test ratio: {test_ratio}")
 
-    dataset_dict = load_simulated_pair_dataset(dataset_path)
+    dataset_dict = load_simulated_pair_dataset(DATASET_PATHS)
     _, val_pairs = split_positive_pairs(
         dataset_dict["positive_pair_indices"],
         test_ratio=test_ratio,
